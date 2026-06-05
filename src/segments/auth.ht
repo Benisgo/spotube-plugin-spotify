@@ -1,6 +1,6 @@
 import 'module:std' as std
 import 'module:spotube_plugin' as spotube
-import { TOTP, OTPAlgorithm } from '../../dependencies/hetu_otp_util/lib/assets/hetu/otp_util.ht';
+import 'module:otp_util' as otp_util;
 
 var StreamController = std.StreamController
 var Stream = std.Stream
@@ -86,11 +86,19 @@ class SpotifyAuthEndpoint {
     })
 	}
 
+  fun _isSpotifyStatusUrl(url: string) -> bool {
+    var safeUrl = url.endsWith("/") ? url.substring(0, url.length - 1) : url
+    var exp = Regex("https:\\/\\/accounts.spotify.com\\/.+\\/status(\\?.*)?$")
+    return exp.hasMatch(safeUrl)
+  }
+
   fun getLatestNuance() -> Future { // Future<{v: int, s: string}>
     return client.get_req(
       "https://api.github.com/gists/22ed9c6ba463899e933427f7de1f0eef"
     ).then((res) {
-      var data = JSON.decode(JSON.decode(res.data)["files"]["nuances.json"]["content"]);
+      var raw = res.data
+      var gist = raw["files"] != null ? raw : JSON.decode(raw)
+      var data = JSON.decode(gist["files"]["nuances.json"]["content"]);
       data.sort((a, b) => b["v"].compareTo(a["v"]))
       return data.first
     })
@@ -101,18 +109,21 @@ class SpotifyAuthEndpoint {
     .then((res) {
       final timestampSeconds = res.data["serverTime"]
 
-      final totp = TOTP(
+      final totp = otp_util.TOTP(
         secret: secret,
-        algorithm: OTPAlgorithm.SHA1,
+        algorithm: otp_util.OTPAlgorithm.SHA1,
         digits: 6,
         interval: 30,
       )
 
-      return totp.value(
-        date: DateTime.fromMillisecondsSinceEpoch(
-          timestampSeconds * 1000 // Convert seconds to milliseconds
-        )
+      final serverDateTime = DateTime.fromMillisecondsSinceEpoch(
+        timestampSeconds * 1000 // Convert seconds to milliseconds
       )
+
+      return {
+        totp: totp.value(date: serverDateTime),
+        timestampSeconds: timestampSeconds,
+      }.toJson()
     })
 	}
 
@@ -122,19 +133,19 @@ class SpotifyAuthEndpoint {
     for (int i = 0; i < length; i++) {
       bytes.add(Random().nextInt(256).toString())
     }
+
+    return bytes.join("")
   }
 
-  fun getToken({
+	fun getToken({
 		mode = "transport",
-		timestamp: DateTime,
+		timestampSeconds: int,
 		totp: string,
 		spDc: string,
     mode: string,
     totpVer: int
 	}) -> Future {
-    print("Timestamp: ${timestamp}, TOTP: ${totp}, Mode: ${mode}, spDc: ${spDc}")
-    final timestampSeconds = (timestamp.millisecondsSinceEpoch / 1000).floor()
-		final accessTokenUrl = "https://open.spotify.com/api/token?reason=${mode}&productType=web-player&totp=${totp}&totpServer=${totp}&totpVer=${totpVer}"
+		final accessTokenUrl = "https://open.spotify.com/api/token?reason=${mode}&productType=web-player&totp=${totp}&totpServer=${timestampSeconds}&totpVer=${totpVer}"
 
 		final userAgent = "${DateTime.now().millisecondsSinceEpoch}${Random().nextInt(100) * 1000}${randomBytesFromMath(16)}"
     .split("").join("")
@@ -156,10 +167,10 @@ class SpotifyAuthEndpoint {
 		final spDc = cookies.where((c) => c["name"] == "sp_dc").first?["value"];
 
     return getLatestNuance().then((nuance){
-      return generateTimedOnTimePassword(nuance["s"]).then((totp){
+      return generateTimedOnTimePassword(nuance["s"]).then((timedToken){
         return getToken(
-          totp: totp,
-          timestamp: DateTime.now(),
+          totp: timedToken["totp"],
+          timestampSeconds: timedToken["timestampSeconds"],
           spDc: "sp_dc=${spDc};",
           mode: "transport",
           totpVer: nuance["v"],
@@ -209,17 +220,21 @@ class SpotifyAuthEndpoint {
 
   fun authenticate() -> Future {
     var webview = Webview(uri: "https://accounts.spotify.com/")
+    var handled = false
 
     var sub: StreamSubscription = webview.onUrlRequestStream.listen((url){
-      var safeUrl = url.endsWith("/") ? url.substring(0, url.length - 1) : url
-      var exp = Regex("https:\\/\\/accounts.spotify.com\\/.+\\/status")
-      if(exp.hasMatch(safeUrl)) {
-        return webview.getCookies(url).then((cookies){
-          return login(cookies.map((cookie)=> cookie.toJson()).toList()).then(() {
-            return webview.close()
-          })
-        })
+      if(handled || !_isSpotifyStatusUrl(url)) {
+        return
       }
+
+      handled = true
+      sub.cancel()
+
+      return webview.getCookies("https://accounts.spotify.com").then((cookies){
+        return webview.close().then(() {
+          return login(cookies.map((cookie)=> cookie.toJson()).toList())
+        })
+      })
     })
 
     return webview.open()

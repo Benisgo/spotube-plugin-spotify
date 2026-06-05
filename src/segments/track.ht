@@ -1,5 +1,7 @@
-import { SpotifyGqlApi } from '../../dependencies/hetu_spotify_gql_client/lib/assets/hetu/spotify_gql_api_client.ht'
+import "module:spotify_gql_api_client" as spotify
 import { Converters } from '../converter/converter.ht'
+
+var SpotifyGqlApi = spotify.SpotifyGqlApi
 
 class TrackEndpoint {
   var client: SpotifyGqlApi

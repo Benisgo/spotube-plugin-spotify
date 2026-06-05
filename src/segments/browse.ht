@@ -1,10 +1,11 @@
 import "module:spotube_plugin" as spotube
 
-import { SpotifyGqlApi } from '../../dependencies/hetu_spotify_gql_client/lib/assets/hetu/spotify_gql_api_client.ht'
+import "module:spotify_gql_api_client" as spotify
 import { Converters } from '../converter/converter.ht'
 import { SpotifyAuthEndpoint } from "./auth.ht"
 
 var Timezone = spotube.Timezone
+var SpotifyGqlApi = spotify.SpotifyGqlApi
 
 class BrowseEndpoint {
   var client: SpotifyGqlApi
@@ -12,11 +13,36 @@ class BrowseEndpoint {
 
   construct (this.client, this.auth)
 
+  fun _emptyPaginated(limit: int) {
+    return {
+      limit: limit ?? 20,
+      nextOffset: null,
+      hasMore: false,
+      total: 0,
+      items: List(),
+    }.toJson()
+  }
+
+  fun _getSpTCookie() {
+    if (auth.credentials == null || auth.credentials["cookies"] == null) {
+      return null
+    }
+
+    return auth.credentials["cookies"]
+      .where((c)=>c["name"] == "sp_t")
+      .first?["value"]
+  }
+
   fun sections({offset: int, limit: int}) {
+    var spTCookie = _getSpTCookie()
+    if (spTCookie == null) {
+      return _emptyPaginated(limit)
+    }
+
     return Timezone.getLocalTimeZone().then((timeZone){
       return client.browse.home(
         timeZone: timeZone,
-        spTCookie: auth.credentials["cookies"].where((c)=>c["name"] == "sp_t").elementAt(0)["value"]
+        spTCookie: spTCookie,
         limit: limit,
       ).then((sections){
         return {
@@ -47,11 +73,16 @@ class BrowseEndpoint {
   }
 
   fun sectionItems(id: string, {offset: int, limit: int}) {
+    var spTCookie = _getSpTCookie()
+    if (spTCookie == null) {
+      return _emptyPaginated(limit)
+    }
+
     return Timezone.getLocalTimeZone().then((timeZone) {
       return client.browse.homeSection(
         id, 
         timeZone: timeZone,
-        spTCookie: auth.credentials["cookies"].where((c)=>c["name"] == "sp_t").elementAt(0)["value"],
+        spTCookie: spTCookie,
         offset: offset,
         limit: limit,
       ).then((section){

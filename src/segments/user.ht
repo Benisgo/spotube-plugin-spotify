@@ -1,44 +1,95 @@
-import { SpotifyGqlApi } from '../../dependencies/hetu_spotify_gql_client/lib/assets/hetu/spotify_gql_api_client.ht'
-import { SpotifyError } from '../../dependencies/hetu_spotify_gql_client/lib/assets/hetu/error.ht'
+import "module:std" as std
+import "module:spotify_gql_api_client" as spotify
 import { Converters } from '../converter/converter.ht'
+
+var HttpClient = std.HttpClient
+var HttpResponse = std.HttpResponse
+var SpotifyGqlApi = spotify.SpotifyGqlApi
 
 class UserEndpoint {
   var client: SpotifyGqlApi
 
   construct (this.client)
 
+  fun _isSpotifyError(value) -> bool {
+    return value is Map && value["error"] != null
+  }
+
+  fun _throwSpotifyError(value) {
+    var error = value["error"] ?? {}
+    throw {
+      status: error["status"],
+      message: error["message"] ?? "Spotify request failed",
+    }.toJson()
+  }
+
+  fun _safeString(value, fallback = "") {
+    return value == null ? fallback : "${value}"
+  }
+
+  fun _safeImages(images) {
+    if (images == null) {
+      return []
+    }
+
+    if (images is Map) {
+      return _safeImages(images["sources"] ?? images["items"])
+    }
+
+    var normalized = List()
+
+    for (var image in images ?? []) {
+      if (image == null) continue
+
+      if (image["url"] != null) {
+        normalized.add({
+          url: _safeString(image["url"]),
+          width: image["width"],
+          height: image["height"],
+        }.toJson())
+        continue
+      }
+
+      if (image["sources"] != null) {
+        normalized.addAll(_safeImages(image["sources"]))
+        continue
+      }
+
+      if (image["items"] != null) {
+        normalized.addAll(_safeImages(image["items"]))
+      }
+    }
+
+    return normalized
+  }
+
   fun _simpleArtistFromLibrary(artist: Map) {
-    var artistId = artist["uri"]?.split(":").last ?? artist["id"]
+    var artistId = _safeString(artist["uri"]?.split(":").last ?? artist["id"])
 
     return {
       id: artistId,
-      uri: artist["uri"] ?? "spotify:artist:${artistId}",
-      name: artist["profile"]?["name"] ?? artist["name"] ?? "",
-      external_urls: {
-        spotify: "https://open.spotify.com/artist/${artistId}",
-      },
-      images: artist["visuals"]?["avatarImage"]?["sources"] ?? artist["images"] ?? [],
+      name: _safeString(artist["profile"]?["name"] ?? artist["name"]),
+      externalUri: artistId == "" ? "" : "https://open.spotify.com/artist/${artistId}",
+      images: _safeImages(artist["visuals"]?["avatarImage"]?["sources"] ?? artist["images"]),
     }.toJson()
   }
 
   fun _simpleAlbumFromLibraryItem(item: Map) {
     var wrapper = item["item"] ?? item
     var album = wrapper["data"] ?? wrapper
-    var albumId = wrapper["_uri"]?.split(":").last ?? album["uri"]?.split(":").last ?? album["id"]
+    var albumId = _safeString(wrapper["_uri"]?.split(":").last ?? album["uri"]?.split(":").last ?? album["id"])
     var date = album["date"]
 
     return {
       id: albumId,
-      name: album["name"] ?? "",
-      external_urls: {
-        spotify: "https://open.spotify.com/album/${albumId}",
-      },
-      release_date:
+      name: _safeString(album["name"]),
+      externalUri: albumId == "" ? "" : "https://open.spotify.com/album/${albumId}",
+      releaseDate:
         date == null
-          ? album["release_date"]
+          ? _safeString(album["release_date"])
           : (
               date["year"] == null
-                ? null
+                ? ""
                 : (
                     date["precision"] == "DAY"
                       ? "${date["year"]}-${date["month"] ?? "01"}-${date["day"] ?? "01"}"
@@ -49,33 +100,150 @@ class UserEndpoint {
                         )
                   )
             ),
-      release_date_precision:
-        date == null
-          ? (album["release_date_precision"] ?? "year")
-          : (date["precision"]?.toLowerCase() ?? "year"),
-      artists: album["artists"]?["items"]?.map((artist) => _simpleArtistFromLibrary(artist)).toList() ?? [],
-      images: album["coverArt"]?["sources"] ?? album["images"] ?? [],
-      album_type: album["type"]?.toLowerCase() ?? album["album_type"] ?? "album",
+      artists: album["artists"]?["items"]?.where((artist) => artist != null).map((artist) => _simpleArtistFromLibrary(artist)).toList() ?? [],
+      images: _safeImages(album["coverArt"]?["sources"] ?? album["images"]),
+      albumType: (album["type"]?.toLowerCase() == "ep" || album["album_type"] == "ep")
+        ? "compilation"
+        : (album["type"]?.toLowerCase() ?? album["album_type"] ?? "album"),
     }.toJson()
   }
 
   fun _fullArtistFromLibraryItem(item: Map) {
     var wrapper = item["item"] ?? item
     var artist = wrapper["data"] ?? wrapper
-    var artistId = wrapper["_uri"]?.split(":").last ?? artist["uri"]?.split(":").last ?? artist["id"]
+    var artistId = _safeString(wrapper["_uri"]?.split(":").last ?? artist["uri"]?.split(":").last ?? artist["id"])
 
     return {
       id: artistId,
-      name: artist["profile"]?["name"] ?? artist["name"] ?? "",
-      external_urls: {
-        spotify: "https://open.spotify.com/artist/${artistId}",
-      },
-      images: artist["visuals"]?["avatarImage"]?["sources"] ?? artist["images"] ?? [],
+      name: _safeString(artist["profile"]?["name"] ?? artist["name"]),
+      externalUri: artistId == "" ? "" : "https://open.spotify.com/artist/${artistId}",
+      images: _safeImages(artist["visuals"]?["avatarImage"]?["sources"] ?? artist["images"]),
       genres: artist["genres"] ?? [],
       followers: artist["stats"]?["followers"] ?? artist["followers"]?["total"],
     }.toJson()
   }
-  
+
+  fun _simplePlaylistFromLibraryItem(item: Map) {
+    var wrapper = item["item"] ?? item
+    var playlist = wrapper["data"] ?? wrapper
+    var visuals = playlist["visuals"] ?? wrapper["visuals"] ?? {}
+    var playlistId = _safeString(wrapper["_uri"]?.split(":").last ?? playlist["uri"]?.split(":").last ?? playlist["id"])
+    var owner = playlist["ownerV2"]?["data"] ?? playlist["owner"] ?? {}
+    var ownerId = _safeString(owner["uri"]?.split(":").last ?? owner["id"])
+
+    return {
+      id: playlistId,
+      name: _safeString(playlist["name"]),
+      description: _safeString(playlist["description"]),
+      externalUri: playlistId == "" ? "" : "https://open.spotify.com/playlist/${playlistId}",
+      images: _safeImages(
+        playlist["images"]
+          ?? visuals["avatarImage"]?["sources"]
+          ?? visuals["image"]?["sources"]
+          ?? playlist["coverArt"]?["sources"]
+      ),
+      owner: {
+        id: ownerId,
+        name: _safeString(owner["name"] ?? owner["display_name"]),
+        images: _safeImages(owner["images"] ?? owner["avatar"]?["sources"]),
+        externalUri: ownerId == "" ? "" : "https://open.spotify.com/user/${ownerId}",
+      }.toJson(),
+    }.toJson()
+  }
+
+  fun _simplePlaylistFromApiPlaylist(playlist: Map) {
+    var owner = playlist["owner"] ?? {}
+    var ownerId = _safeString(owner["id"] ?? owner["uri"]?.split(":").last)
+
+    return {
+      id: _safeString(playlist["id"] ?? playlist["uri"]?.split(":").last),
+      name: _safeString(playlist["name"]),
+      description: _safeString(playlist["description"]),
+      externalUri: _safeString(
+        playlist["external_urls"]?["spotify"]
+          ?? (playlist["id"] == null ? "" : "https://open.spotify.com/playlist/${playlist["id"]}")
+      ),
+      images: _safeImages(playlist["images"]),
+      owner: {
+        id: ownerId,
+        name: _safeString(owner["name"] ?? owner["display_name"]),
+        images: _safeImages(owner["images"]),
+        externalUri: ownerId == "" ? "" : "https://open.spotify.com/user/${ownerId}",
+      }.toJson(),
+    }.toJson()
+  }
+
+  fun _fetchLibraryPlaylists() {
+    return client.gqlClient.post(
+      "",
+      data: {
+        "variables": {
+          "filters": ["Playlists"],
+          "order": null,
+          "textFilter": "",
+          "features": [
+            "LIKED_SONGS",
+            "YOUR_EPISODES_V2",
+            "PRERELEASES",
+            "EVENTS"
+          ],
+          "limit": 500,
+          "offset": 0,
+          "flatten": true,
+          "expandedFolders": [],
+          "folderUri": null,
+          "includeFoldersWhenFlattening": true
+        },
+        "operationName": "libraryV3",
+        "extensions": {
+          "persistedQuery": {
+            "version": 1,
+            "sha256Hash": "2de10199b2441d6e4ae875f27d2db361020c399fb10b03951120223fbed10b08"
+          }
+        }
+      }.toJson()
+    ).then((res){
+      var data = res.data
+
+      if (_isSpotifyError(data)) {
+        _throwSpotifyError(data)
+      }
+
+      var playlistsData = data["data"]?["me"]?["libraryV3"] ?? {}
+      var items = playlistsData["items"] ?? []
+      var playlists = List()
+      var seen = Map()
+
+      for (var item in items) {
+        if (item == null) continue
+        if (!_isPlaylistLibraryItem(item)) continue
+
+        var playlist = _simplePlaylistFromLibraryItem(item)
+        var key = _safeString(playlist["id"] ?? playlist["externalUri"])
+        if (key == "") continue
+        if (seen[key] == true) continue
+
+        seen[key] = true
+        playlists.add(playlist)
+      }
+
+      return playlists
+    })
+  }
+
+  fun _isPlaylistLibraryItem(item: Map) -> bool {
+    var wrapper = item["item"] ?? item
+    var data = wrapper["data"] ?? wrapper
+    var typename = wrapper["__typename"] ?? item["__typename"] ?? data["__typename"]
+    var uri = _safeString(wrapper["_uri"] ?? data["uri"] ?? item["_uri"])
+    var objectType = _safeString(item["objectType"] ?? wrapper["objectType"] ?? data["objectType"])
+
+    return typename == "PlaylistResponseWrapper"
+      || typename == "Playlist"
+      || objectType == "Playlist"
+      || uri.startsWith("spotify:playlist:")
+  }
+
   fun me() {
     return client.user.me().then((data){
       return Converters.simpleUser(data)
@@ -89,11 +257,20 @@ class UserEndpoint {
   }
 
   fun savedPlaylists({ offset: int, limit: int }) {
-    return client.user.savedPlaylists(offset: offset, limit: limit).then((data){           
-      return Converters.paginated(
-        data, 
-        (items) => Converters.simplePlaylistsFromLibraryV3(data["items"])
-      )
+    return _fetchLibraryPlaylists().then((libraryItems){
+      var safeOffset = offset ?? 0
+      var safeLimit = limit ?? 50
+      var pageItems = (libraryItems ?? []).skip(safeOffset).take(safeLimit).toList()
+      var nextOffset = safeOffset + safeLimit
+      var hasMore = (libraryItems ?? []).length > nextOffset
+
+      return {
+        limit: safeLimit,
+        nextOffset: hasMore ? nextOffset : null,
+        hasMore: hasMore,
+        total: (libraryItems ?? []).length,
+        items: pageItems,
+      }.toJson()
     })
   }
 
@@ -129,8 +306,8 @@ class UserEndpoint {
     ).then((res){
       var data = res.data
 
-      if (SpotifyError.isError(data)) {
-        throw SpotifyError(data)
+      if (_isSpotifyError(data)) {
+        _throwSpotifyError(data)
       }
 
       var albumsData = data["data"]["me"]["libraryV3"]
@@ -189,8 +366,8 @@ class UserEndpoint {
     ).then((res){
       var data = res.data
 
-      if (SpotifyError.isError(data)) {
-        throw SpotifyError(data)
+      if (_isSpotifyError(data)) {
+        _throwSpotifyError(data)
       }
 
       var artistData = data["data"]["me"]["libraryV3"]
