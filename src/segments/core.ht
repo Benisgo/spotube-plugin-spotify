@@ -37,8 +37,20 @@ class CorePlugin {
     var minor = int.parse(versionParts[1])
     var patch = int.parse(versionParts[2])
 
+    var repository = currentConfig["repository"] ?? "https://github.com/sonic-liberation/spotube-plugin-spotify"
+    var repoPath = repository
+      .replaceFirst("https://github.com/", "")
+      .replaceFirst("http://github.com/", "")
+      .replaceFirst("https://www.github.com/", "")
+      .replaceFirst("http://www.github.com/", "")
+      .split("/")
+
+    if (repoPath.length < 2) {
+      throw "Invalid repository URL: ${repository}"
+    }
+
     return client.get_req(
-      "https://api.github.com/repos/sonic-liberation/spotube-plugin-spotify/releases/latest",
+      "https://api.github.com/repos/${repoPath[0]}/${repoPath[1]}/releases/latest",
       options: RequestOptions(
         headers: {
           "Accept": "application/vnd.github.v3+json"
