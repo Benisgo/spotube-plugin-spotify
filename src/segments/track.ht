@@ -30,13 +30,16 @@ class TrackEndpoint {
       return client.search.playlists(query, limit: 20).then((data) {
         var playlists = data["items"];
         var radioPlaylist = playlists.firstWhere((playlist) => playlist["name"] == query, orElse: () => null);
+        if (radioPlaylist == null) return [];
         return client.playlist.tracks(radioPlaylist["id"], offset: 0, limit: 50)
           .then((data) {
             var tracks = data["items"].map((item){
-              item["track"]["available_markets"] = null
-              return item["track"]
-            })
-            .toList()
+              if (item != null && item["track"] != null) {
+                item["track"]["available_markets"] = null
+                return item["track"]
+              }
+              return null
+            }).where((item) => item != null).toList()
 
             return Converters.fullTracks(tracks)
           });
